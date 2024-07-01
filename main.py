@@ -29,5 +29,12 @@ print("-> Load model defined")
 # perform the z bus PF
 Zbus = Zbus(network, noLoadQant, loadQant)
 output_v = Zbus.perform_Zbus()  # fixed point method-like method
-print(output_v) 
+#print(output_v) 
 print("-> Converged to a solution")
+
+print("Display of solutions")
+#print(network)
+#print(noLoadQant)
+#print(load)
+#print(loadQant)
+#print(Zbus)
