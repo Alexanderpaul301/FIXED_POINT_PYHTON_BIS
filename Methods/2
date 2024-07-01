@@ -1,0 +1,245 @@
+import py_dss_interface
+import numpy as np
+import pandas as pd
+from scipy import sparse
+
+
+class Ybus:
+    def __init__(self, dss):
+        self.dss = dss
+    # Methods
+
+    def define_Ybus(self):
+        elements = self.dss.circuit_all_element_names()
+        # get buses names in order
+        buses_pd, busesReg_pd, sBus = self.__getBusNames(elements)
+        # unique buses
+        busNames = np.unique(buses_pd.values.reshape((buses_pd.size, 1), order='F')).tolist()
+        busNamesWithRegs = np.unique(busesReg_pd.values.reshape((busesReg_pd.size, 1), order='F')).tolist()
+        # append substation bus
+        busNames.remove(sBus)
+        busNames.append(sBus) # assign substation at the end
+        busNamesWithRegs.remove(sBus)
+        busNamesWithRegs.append(sBus) # assign substation at the end
+        # number of buses
+        nBuses = len(busNames)
+        busSet = np.expand_dims(np.arange(0, nBuses), axis=1)
+        JbusSet = np.expand_dims(np.arange(0, 3*nBuses), axis=1)
+        nBr = N = nBuses - 1
+        JBrachSet = np.arange(0, 3*nBr)
+        phaseNodesLinIndices = np.reshape(JbusSet, (3, nBuses), order="F").T
+        phaseNodes = np.kron(np.array([0, 1, 2]), np.ones((nBuses, 1)))
+        # sparse matrices
+        CNodes = sparse.csr_matrix(np.zeros((nBr, nBuses)))
+        CIndices = sparse.csr_matrix(np.zeros((nBr*3, nBuses*3)))
+        Ytilde = sparse.csr_matrix(np.zeros((3*nBuses, 3*nBuses)))
+        Ybranch = sparse.csr_matrix(np.zeros((3*nBr, 3*nBr)))
+
+        for ii, elem in enumerate(buses_pd.index):
+
+            jBranchIdx = np.arange(ii*3, (ii+1)*3)
+            bus1 = buses_pd.loc[elem, 0].values.replace("r", "")
+            bus2 = buses_pd.loc[elem, 1].values
+            nIdx = np.where(busNames == bus1)
+            mIdx = np.where(busNames == bus2)
+            jnIdx = np.arange((nIdx)*3+1, nIdx*3)
+            jmIdx = np.arange((mIdx)*3+1, mIdx*3)
+            AR = np.zeros((3, 3))
+
+            CNodes[ii, nIdx] = 1
+            CNodes[ii, mIdx] = -1
+            Cmat = np.zeros((3, 3))
+
+            if elem == "Line.sw1":  # reg1
+            elif elem == "Line.L11":  # reg2
+            elif elem == "Line.L25":  # reg3
+            elif elem == "Line.L117":  # reg4
+            elif elem == "Transformer.xfm1":
+            else:
+                # get line Yprim
+                Ytilde, Ybranch, CIndices = self.__getLineYprim(elem, Ytilde, Ybranch, CIndices, jnIdx, jmIdx, jBranchIdx)
+
+
+    # Helper methods
+
+    def __getBusNames(self, elements):
+
+        # extract element names from OpenDSS
+        # for lines
+        lineNames = list()
+        lineBuses = dict()
+
+        # for Switches
+        swNames = list()
+        swBuses = dict()
+        # for Trafos
+        trafoNames = list()
+        trafoBuses = dict()
+        # for Regulation devices
+        regNames = list()
+        regBuses = dict()
+        # for Capacitors
+        capNames = list()
+        capBuses = dict()
+
+        for i, elem in enumerate(elements):
+            self.dss.circuit_set_active_element(elem)
+            buses = self.dss.cktelement_read_bus_names()
+            buses1 = buses[0]
+            try:
+                buses2 = buses[1]
+            except:
+                continue
+            if "Vsource" in elem:
+                sName = elem
+                sBus = buses1.split('.')[0]
+                sPhase = buses1.split('.')[0]
+            elif "Line" in elem:
+                senBus = buses1.split('.')[0].replace("r", "")
+                recBus = buses2.split('.')[0].replace("r", "")
+                if "sw" in elem:
+                    swNames.append(elem)
+                    swBuses[elem] = [senBus, recBus]
+                else:
+                    lineNames.append(elem)
+                    lineBuses[elem] = [senBus, recBus]
+            elif "Transformer" in elem:
+                if "reg" in elem:
+                    regNames.append(elem)
+                    regBuses[elem] = [buses1.split('.')[0], buses2.split('.')[0]]
+                else:
+                    trafoNames.append(elem)
+                    trafoBuses[elem] = [buses1.split('.')[0], buses2.split('.')[0]]
+            elif "Capacitor" in elem:
+                capNames.append(elem)
+                capBuses[elem] = [buses1.split('.')[0], buses2.split('.')[0]]
+        # create data frames with line elements
+        lineBuses_pd = pd.DataFrame(np.asarray([lineBuses[line] for line in lineNames]), index=lineNames)
+        # create data frame for sw
+        swBuses_pd = pd.DataFrame(np.asarray([swBuses[line] for line in swNames]), index=swNames)
+        swBuses_pd = swBuses_pd.drop('Line.sw7')
+        swBuses_pd = swBuses_pd.drop('Line.sw8')
+        # create data frame for Trafo
+        trafoBuses_pd = pd.DataFrame(np.asarray([trafoBuses[line] for line in trafoNames]), index=trafoNames)
+        # create data frame for Reg 
+        regBuses_pd = pd.DataFrame(np.asarray([regBuses[line] for line in regNames]), index=regNames)
+        # concatenate buses, not including reg
+        buses_pd = pd.concat([lineBuses_pd, swBuses_pd, trafoBuses_pd])
+        # concatenate including reg
+        buses_reg_pd = pd.concat([buses_pd, regBuses_pd])
+        return buses_pd, buses_reg_pd, sBus
+
+    def __getRegYprim(self, tapA, tapB, tapC):
+
+        arA = 1-0.00625*tapA
+        arB = 1-0.00625*tapB
+        arC = 1-0.00625*tapC
+        Av = np.array([[arA, 0, 0], [0, arB, 0], [ 0, 0, arC]])
+        Ai = np.linalg.inv(Av)
+        ztReg = (Sbase/5000000)*3*0.00001j
+        Zregulator = np.array([[ztReg./arA, 0, 0], [0, ztReg./arB, 0], [0, 0, ztReg./arC]])
+
+        Zseries = Zcfg(:, :, lineCodes(ii)) 
+        Yshunt = Ycfg(:, :, lineCodes(ii))
+        availablePhases = find(any(Zseries))
+
+        Zseries = Zseries(availablePhases,availablePhases); 
+        Yshunt = Yshunt(availablePhases,availablePhases); 
+        # length of the line:
+        lineLength=lineLengths(ii);
+        YtildeNMn(availablePhases,availablePhases)=( inv(Zseries*lineLength)/Ybase+0.5*Yshunt*lineLength/Ybase);
+        YtildeNMm(availablePhases,availablePhases)=(inv(Zseries*lineLength)/Ybase);
+        YtildeMNn(availablePhases,availablePhases)=(inv(Zseries*lineLength)/Ybase);
+        YtildeMNm(availablePhases,availablePhases)=(inv(Zseries*lineLength)/Ybase+0.5*Yshunt*lineLength/Ybase);
+
+        % Ytilde
+        if strcmp(regulatorTypes,'ideal')
+
+            Ytilde(jnIdx, jnIdx)= Ytilde(jnIdx, jnIdx)+Ai*(YtildeNMn)*inv(Av);
+            Ytilde(jnIdx, jmIdx)=-Ai*YtildeNMm;
+            Ytilde(jmIdx,jmIdx)=Ytilde(jmIdx,jmIdx)+YtildeMNm;
+            Ytilde(jmIdx,jnIdx)=-YtildeMNn*inv(Av);
+
+        else
+            Ytilde(jnIdx, jnIdx)= Ytilde(jnIdx, jnIdx)+Ai*inv(eye(3)+ YtildeNMn *inv(Av)*Zregulator)*(YtildeNMn)*inv(Av);
+            Ytilde(jnIdx, jmIdx)=-Ai*inv(eye(3)+ YtildeNMn *inv(Av)*Zregulator)*YtildeNMm;
+            Ytilde(jmIdx,jmIdx)=Ytilde(jmIdx,jmIdx)+YtildeMNm - YtildeMNm*Zregulator*Ai*inv(eye(3)+ YtildeNMn *inv(Av)*Zregulator)*YtildeNMm;
+            Ytilde(jmIdx,jnIdx)=-(YtildeMNn*inv(Av)-YtildeMNn*Zregulator*Ai*inv(eye(3)+ YtildeNMn *inv(Av)*Zregulator)*(YtildeNMn)*inv(Av));
+        end
+        regulatorVoltageGains{1}=Av;
+        regulatorCurrentGains{1}=Ai; 
+        regulatorImpedances{1}=Zregulator; 
+        regulatorYNMn{1}=Ai*inv(eye(3)+ YtildeNMn *inv(Av)*Zregulator)*(YtildeNMn)*inv(Av);
+        regulatorYNMm{1}=Ai*inv(eye(3)+ YtildeNMn *inv(Av)*Zregulator)*YtildeNMm;
+
+
+        % Ybranch
+        YbranchII=zeros(3,3);
+        YbranchII(availablePhases,availablePhases)=(inv(Zseries*lineLength)/Ybase);
+        Ybranch(jBranchIdx,jBranchIdx)=YbranchII;
+        Cmat=zeros(3);
+        Cmat(availablePhases,availablePhases)=eye(length(availablePhases));
+        CIndices( jBranchIdx, jnIdx) = Cmat;
+        CIndices( jBranchIdx, jmIdx) = -Cmat;
+
+    def __getYparts(self, elem):
+
+        # prelocate
+        YtildeNMn = np.zeros((3, 3), dtype=complex)
+        YtildeNMm = np.zeros((3, 3), dtype=complex)
+        YtildeMNn = np.zeros((3, 3), dtype=complex)
+        YtildeMNm = np.zeros((3, 3), dtype=complex)
+        YbranchII = np.zeros((3, 3), dtype=complex)
+        Cmat = np.zeros((3, 3))
+
+        self.dss.circuit_set_active_element(elem)
+
+        # get nodes and discard the reference
+        nodes = self.dss.cktelement_node_order()
+        # get number of nodes including reference
+        n = len(nodes)
+        # reorder nodes
+        nodes = np.asarray(nodes).reshape((int(len(nodes)/2), -1), order="F")
+        # extract and organize yprim
+        yprim_tmp = self.dss.cktelement_y_prim()
+        yprim_tmp = np.asarray(yprim_tmp).reshape((2*n, n), order="F")
+        yprim_tmp = yprim_tmp.T
+        # accomodate in the way we want
+        yprim_diag = yprim_tmp[:int(n/2), :n]
+        yprim_diag = yprim_diag[:, 0::2] + 1j * yprim_diag[:, 1::2]
+        yprim_off = -yprim_tmp[:int(n/2), n:]  # negative in OpenDSS
+        yprim_off = yprim_off[:, 0::2] + 1j * yprim_off[:, 1::2]
+        # define columns and rows
+        row = nodes[:, 0] - 1
+        col = nodes[:, 1] - 1
+        # Ytilde
+        YtildeNMn[np.ix_(row, col)] = yprim_diag
+        YtildeNMm[np.ix_(row, col)] = yprim_off
+        YtildeMNn[np.ix_(row, col)] = yprim_off
+        YtildeMNm[np.ix_(row, col)] = yprim_diag
+        YtildeBlocks = [YtildeNMn, YtildeNMm, YtildeMNn, YtildeMNm] 
+        # Ybranch
+        YbranchII[np.ix_(row, col)] = yprim_off
+        # Cmat
+        Cmat[np.ix_(row, col)] = np.eye(int(n/2))
+
+        return yprim_diag, yprim_off, row, col
+
+    def __getLineYprim(self, elem, Ytilde, Ybranch, CIndices, jnIdx, jmIdx, jBranchIdx):
+        # update Ytilde and Ybranch
+        if "Line" in elem:
+            # get parts
+            yprim_diag, yprim_off, row, col = self.__getYparts(self, elem)
+
+            # Ytilde
+            Ytilde[np.ix_(jnIdx, jnIdx)] += YtildeNMn
+            Ytilde[np.ix_(jnIdx, jmIdx)] = -YtildeNMm
+            Ytilde[np.ix_(jmIdx, jmIdx)] += YtildeMNm
+            Ytilde[np.ix_(jmIdx, jnIdx)] = -YtildeMNn
+            # Ybranch
+            Ybranch[np.ix_(jBranchIdx, jBranchIdx)] = YbranchII
+            # Cmat
+            CIndices[np.ix_(jBranchIdx, jnIdx)] = Cmat
+            CIndices[np.ix_(jBranchIdx, jnIdx)] = -Cmat
+
+        return Ytilde, Ybranch, CIndices
